@@ -244,3 +244,102 @@ layout: two-cols
 For Caur Tech: if instruments write to local disk first then sync to cloud,
 zarrs-python can accelerate the local write path significantly.
 -->
+
+---
+layout: default
+---
+
+# Chunking Strategy: Align to Access Patterns
+
+```
+Time axis ──────────────────────────►
+Frequency  ┌────┬────┬────┬────┬────┐
+axis       │    │    │    │    │    │  ← chunk along time: fast time slices
+│          │    │    │    │    │    │
+▼          ├────┼────┼────┼────┼────┤
+           │    │    │    │    │    │
+           └────┴────┴────┴────┴────┘
+```
+
+<v-clicks>
+
+- **Time-series queries** → chunk along time axis (narrow, deep chunks)
+- **Spectral/frequency queries** → chunk along frequency axis
+- **Both?** → compromise shape, or use sharding with fine inner chunks
+- Rule of thumb: optimize for the **80% query pattern**
+
+</v-clicks>
+
+---
+layout: default
+---
+
+# Object-Store Best Practices
+
+<v-clicks>
+
+- **Chunk size sweet spot: 1–100 MB** per storage object
+  - Below 1 MB: HTTP overhead dominates
+  - Above 100 MB: wasted bandwidth on partial reads
+- **Consolidated metadata**: avoid per-array metadata fetches
+  - zarr-python 3.x: `zarr.consolidate_metadata(store)`
+- **Flat hierarchies**: every group level = additional LIST call
+- **Read coalescing**: merge nearby byte ranges into fewer requests
+  - S3 supports multi-range GET (check client support)
+- **Concurrent reads**: use async stores or thread pools for parallel chunk fetches
+
+</v-clicks>
+
+---
+layout: default
+---
+
+# Rectilinear Chunking (ZEP 3)
+
+<Excalidraw drawFilePath="/diagrams/rectilinear-chunking.excalidraw" :darkMode="false" class="w-full h-70" />
+
+Per-dimension chunk size **lists** instead of uniform integers.
+No more padding or artificial splitting for variable-length data.
+
+---
+layout: default
+---
+
+# Rectilinear Chunking: Use Cases
+
+<v-clicks>
+
+- **Variable-length acquisitions**: instruments produce runs of different durations
+  - Chunks match actual data boundaries — no wasted padding
+- **Virtualizing heterogeneous collections**: concatenating NetCDF/HDF5 files of different sizes along the time axis
+  - Each file → one chunk along concat dimension
+- **Run-length encoding** in metadata for efficiency when many chunks share the same size
+
+</v-clicks>
+
+---
+layout: default
+---
+
+# Rectilinear Chunks in Code
+
+```python {all|1-2|4-9}
+import zarr
+zarr.config.set({"array.rectilinear_chunks": True})  # experimental flag
+
+arr = zarr.open_array(
+    "acquisitions.zarr/data",
+    shape=(365, 4096),
+    chunks=[[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], [4096]],
+    dtype="float32",
+)
+# Each month gets its own chunk — no padding for short months
+```
+
+<v-clicks>
+
+- **Status**: experimental in zarr-python 3.2 (ZEP 3 draft)
+- Stabilization expected in **zarr-python 3.3**
+- Data written with rectilinear chunks is **not readable by older Zarr versions**
+
+</v-clicks>
