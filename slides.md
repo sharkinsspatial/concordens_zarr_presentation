@@ -123,3 +123,124 @@ layout: two-cols
 For tomography data that's written once and read many times, sharding is almost always a win.
 Random single-chunk updates are the main case where sharding hurts.
 -->
+
+---
+layout: default
+---
+
+# v2 Codec Limitations
+
+```python
+# Zarr v2: flat, implicit ordering
+zarr.open_array(
+    ...,
+    compressor=Blosc(cname="zstd", clevel=3),
+    filters=[Delta(dtype="float32")],
+)
+```
+
+<v-clicks>
+
+- Filter vs. compressor distinction is **arbitrary**
+- Ordering between filters is implicit
+- No checksums in the pipeline
+- All codec work happens in **Python** — GIL-bound
+
+</v-clicks>
+
+---
+layout: default
+---
+
+# v3: Typed, Ordered Codec Pipeline
+
+<Excalidraw drawFilePath="/diagrams/codec-pipeline.excalidraw" :darkMode="false" class="w-full h-60" />
+
+| Stage | Role | Examples |
+|-------|------|----------|
+| **Array → Array** | Transform array data | `TransposeCodec`, delta, scaling |
+| **Array → Bytes** | Serialize to bytes | `BytesCodec` (explicit endianness) |
+| **Bytes → Bytes** | Compress / checksum | `BloscCodec`, `ZstdCodec`, `Crc32cCodec` |
+
+Codecs execute in **declared order** — no ambiguity.
+
+---
+layout: default
+---
+
+# Codec Pipeline in Code
+
+```python {all|3-8}
+import zarr
+from zarr.codecs import TransposeCodec, BytesCodec, BloscCodec, Crc32cCodec
+
+arr = zarr.open_array(
+    "data.zarr",
+    shape=(4096, 4096),
+    dtype="float32",
+    codecs=[
+        TransposeCodec(order=(1, 0)),       # array → array: column-major
+        BytesCodec(endian="little"),         # array → bytes
+        BloscCodec(cname="zstd", clevel=3), # bytes → bytes: compress
+        Crc32cCodec(),                      # bytes → bytes: checksum
+    ],
+)
+```
+
+Explicit, composable, verifiable. Each stage has a clear contract.
+
+---
+layout: default
+---
+
+# zarrs-python: Rust-Powered Codecs
+
+Drop-in replacement for zarr-python's codec pipeline, backed by the **zarrs** Rust crate via PyO3.
+
+```python
+pip install zarrs
+```
+
+```python {all|2}
+import zarr
+zarr.config.set({"codec_pipeline.path": "zarrs.ZarrsCodecPipeline"})
+
+# All existing zarr code works unchanged — codecs run in Rust
+arr = zarr.open_array("data.zarr", mode="r")
+data = arr[:]
+```
+
+<v-clicks>
+
+- Bypasses Python GIL for codec work
+- Configurable concurrency: `chunk_concurrent_maximum`, `chunk_concurrent_minimum`
+- Supports `validate_checksums` and `direct_io` (O_DIRECT) options
+
+</v-clicks>
+
+---
+layout: two-cols
+---
+
+# zarrs-python: Performance & Caveats
+
+**Where it shines**
+
+- Write-heavy workloads: biggest speedup
+- Sharded data: parallelizes inner chunk codec work
+- Large contiguous reads
+- Configurable thread pool per operation
+
+::right::
+
+**Current limitations**
+
+- **Filesystem stores only** — no S3/GCS/Azure yet
+- Best for local write pipelines, post-acquisition processing
+- v0.2.3 — API is still stabilizing
+- Falls back to Python pipeline for unsupported stores
+
+<!--
+For Caur Tech: if instruments write to local disk first then sync to cloud,
+zarrs-python can accelerate the local write path significantly.
+-->
