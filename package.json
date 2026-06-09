@@ -1,0 +1,22 @@
+{
+  "name": "zarr_presentation",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "slidev",
+    "build": "slidev build",
+    "export": "slidev export"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@slidev/cli": "^52.16.0",
+    "@slidev/theme-seriph": "^0.25.0",
+    "slidev-addon-excalidraw": "^1.1.1"
+  }
+}
