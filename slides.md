@@ -343,3 +343,109 @@ arr = zarr.open_array(
 - Data written with rectilinear chunks is **not readable by older Zarr versions**
 
 </v-clicks>
+
+---
+layout: default
+---
+
+# The Concurrent Write Problem
+
+Multiple instruments writing to the same Zarr dataset in cloud storage:
+
+<v-clicks>
+
+- **No transactions**: partial writes leave arrays inconsistent
+- **No versioning**: can't roll back a bad acquisition
+- **No audit trail**: which instrument wrote which data, and when?
+- **Race conditions**: two writers updating the same chunk = last write wins
+
+</v-clicks>
+
+<div v-click class="mt-4 p-4 bg-red-50 rounded border border-red-200 text-red-800">
+Zarr v2/v3 storage specs don't define concurrency semantics — it's up to you.
+</div>
+
+---
+layout: default
+---
+
+# Icechunk: Transactional Storage for Zarr
+
+<Excalidraw drawFilePath="/diagrams/icechunk-architecture.excalidraw" :darkMode="false" class="w-full h-70" />
+
+- Rust core, Python wrapper — **no external database** required
+- All state lives in object storage (S3, GCS, Azure, local)
+
+---
+layout: default
+---
+
+# Icechunk Key Features
+
+<v-clicks>
+
+- **Serializable transaction isolation**
+  - Reads use committed snapshots
+  - Writes commit atomically — all or nothing
+- **Git-like version control**
+  - Branches: `main`, `experiment-1`, `staging`
+  - Tags: immutable release markers
+  - Time-travel: read any historical snapshot
+- **Virtual datasets**
+  - Store chunk references ("pointers") to existing HDF5/NetCDF/GRIB
+  - Update metadata without copying underlying data
+
+</v-clicks>
+
+---
+layout: default
+---
+
+# Icechunk with zarr-python
+
+```python {all|1-5|7-9|11-14}
+import icechunk
+import zarr
+
+# Open (or create) a repository in S3
+repo = icechunk.Repository.open_or_create(
+    storage=icechunk.s3_storage(bucket="caur-data", prefix="tomography/"),
+)
+
+# Get a writable session on the main branch
+session = repo.writable_session("main")
+store = session.store
+
+# Use it exactly like any Zarr v3 store
+root = zarr.open_group(store=store)
+root.create_array("waveforms", shape=(10000, 4096), dtype="float32")
+
+# Commit atomically
+session.commit("Add waveform array from instrument A")
+```
+
+`IcechunkStore` is a **drop-in Zarr v3 store** — existing code works unchanged.
+
+---
+layout: default
+---
+
+# Icechunk for Tomography Pipelines
+
+<v-clicks>
+
+- **Multi-instrument safety**: each instrument opens its own session — no race conditions
+- **Rollback**: bad acquisition? Revert to the last good snapshot
+- **Branch per experiment**: isolate experimental writes, merge when validated
+- **Time-travel**: reproduce any analysis from any point in history
+- **Virtual references**: point to existing data files without copying — migrate incrementally
+
+</v-clicks>
+
+```python
+# Roll back to a known good state
+repo.reset_branch("main", snapshot_id="abc123")
+
+# Branch for an experiment
+session = repo.writable_session("experiment-42")
+```
