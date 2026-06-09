@@ -449,3 +449,54 @@ repo.reset_branch("main", snapshot_id="abc123")
 # Branch for an experiment
 session = repo.writable_session("experiment-42")
 ```
+
+---
+layout: default
+---
+
+# v2 → v3 At a Glance
+
+| | **Zarr v2** | **Zarr v3** |
+|---|---|---|
+| **Metadata** | `.zarray` + `.zattrs` (separate) | Single `zarr.json` |
+| **Codecs** | `compressor` + `filters` (flat) | Typed, ordered pipeline |
+| **Endianness** | Baked into dtype | Explicit in `BytesCodec` |
+| **Sharding** | Not supported | First-class `ShardingCodec` |
+| **Chunking** | Uniform only | Uniform + rectilinear |
+| **Extensions** | Limited | Extensible codecs, stores, dtypes |
+
+<v-click>
+
+**Migration**: zarr-python 3.x **reads v2 data natively** — migrate incrementally, not all at once.
+
+</v-click>
+
+---
+layout: default
+---
+
+# Recommendations
+
+<v-clicks>
+
+1. **Use sharding** for cloud writes — eliminate small-object overhead
+2. **Evaluate zarrs-python** for write-heavy local pipelines
+3. **Adopt Icechunk** for multi-writer safety and versioning
+4. **Align chunk shapes** to your dominant access pattern (80% rule)
+5. **Explore rectilinear chunking** if acquisition windows are variable-length
+6. **Start with zarr-python 3.x** — it reads v2 data, so migration is incremental
+
+</v-clicks>
+
+---
+layout: end
+---
+
+# Resources
+
+- **Zarr**: [zarr.dev](https://zarr.dev) — spec, docs, ZEPs
+- **Icechunk**: [icechunk.io](https://icechunk.io) — docs, getting started
+- **zarrs-python**: [github.com/zarrs/zarrs-python](https://github.com/zarrs/zarrs-python)
+- **ZEP 2**: Sharding spec
+- **ZEP 3**: Rectilinear chunking spec (draft)
+- **zarr-python 3.x**: [zarr.readthedocs.io](https://zarr.readthedocs.io)
