@@ -23,7 +23,7 @@ layout: center
 
 # You Know Zarr v2
 
-Today: what the **v3 ecosystem** solves for high-throughput, cloud-targeted instrument pipelines
+Today: what the **v3 ecosystem** solves for high-throughput, cloud-targeted instrument pipelines:
 
 <v-clicks>
 
@@ -63,11 +63,19 @@ layout: default
 
 # Sharding: Decouple Chunks from Objects
 
-<Excalidraw drawFilePath="/diagrams/sharding-concept.excalidraw" :darkMode="false" class="w-full h-80" />
+<div class="flex flex-col items-center">
+  <div class="w-3/4">
+    <Excalidraw drawFilePath="/diagrams/sharding-concept.excalidraw" :darkMode="false" />
+  </div>
+</div>
+
+<div class="mt-4 text-sm">
 
 - **Inner chunks**: fine-grained for partial reads
 - **Shard (outer chunk)**: one storage object containing many inner chunks
 - **Shard index**: byte offsets enable reading a single inner chunk without fetching the whole shard
+
+</div>
 
 ---
 layout: default
@@ -77,19 +85,16 @@ layout: default
 
 ```python {all|3-8|4|5-8}
 import zarr
-from zarr.codecs import ShardingCodec, BloscCodec, BytesCodec
+from zarr.codecs import BloscCodec, BytesCodec
 
-arr = zarr.open_array(
+arr = zarr.create_array(
     "s3://bucket/tomography.zarr/data",
     shape=(10000, 4096, 4096),
-    chunks=(100, 512, 512),         # shard (outer) shape
-    codecs=[
-        ShardingCodec(
-            chunk_shape=(10, 32, 32),  # inner chunk shape
-            codecs=[BytesCodec(), BloscCodec(cname="zstd", clevel=3)],
-        )
-    ],
+    shards=(100, 512, 512),          # shard (outer) shape -> 1 storage object
+    chunks=(10, 32, 32),             # inner chunk shape -> partial reads
     dtype="float32",
+    serializer=BytesCodec(),
+    compressors=[BloscCodec(cname="zstd", clevel=3)],
 )
 ```
 
@@ -97,27 +102,33 @@ Each shard: `(100×512×512)` = **~100 MB** — one S3 object
 Inner chunks: `(10×32×32)` — partial reads at fine granularity
 
 ---
-layout: two-cols
+layout: default
 ---
 
 # Sharding Trade-offs
 
+<div class="grid grid-cols-2 gap-8 mt-4 text-gray-600">
+<div>
+
 **Benefits**
 
-- Reduces object count by 100-1000x
+- Drastically reduces overall object count
 - Lower cloud API costs
-- Better sequential throughput
+- Better sequential throughput (via coalesce)
 - Shard index enables partial reads
 
-::right::
+</div>
+<div>
 
 **Considerations**
 
 - **Write amplification**: updating one inner chunk rewrites the shard
-- Shard size sweet spot: **1-100 MB**
-- Too large → wasted bandwidth on partial reads
-- Too small → back to the small-object problem
+- Shard size sweet spot: **100 MB** (but fully dependent on storage backend)
+- Too large → Higher overhead during writing when a shard is rewritten
 - Best when write pattern is **append-heavy** (not random updates)
+
+</div>
+</div>
 
 <!--
 For tomography data that's written once and read many times, sharding is almost always a win.
@@ -132,7 +143,7 @@ layout: default
 
 ```python
 # Zarr v2: flat, implicit ordering
-zarr.open_array(
+zarr.create_array(
     ...,
     compressor=Blosc(cname="zstd", clevel=3),
     filters=[Delta(dtype="float32")],
@@ -154,7 +165,13 @@ layout: default
 
 # v3: Typed, Ordered Codec Pipeline
 
-<Excalidraw drawFilePath="/diagrams/codec-pipeline.excalidraw" :darkMode="false" class="w-full h-60" />
+<div class="flex flex-col items-center">
+  <div class="w-3/4">
+    <Excalidraw drawFilePath="/diagrams/codec-pipeline.excalidraw" :darkMode="false" />
+  </div>
+</div>
+
+<div class="mt-4 text-sm">
 
 | Stage | Role | Examples |
 |-------|------|----------|
@@ -163,6 +180,8 @@ layout: default
 | **Bytes → Bytes** | Compress / checksum | `BloscCodec`, `ZstdCodec`, `Crc32cCodec` |
 
 Codecs execute in **declared order** — no ambiguity.
+
+</div>
 
 ---
 layout: default
@@ -197,7 +216,7 @@ layout: default
 
 Drop-in replacement for zarr-python's codec pipeline, backed by the **zarrs** Rust crate via PyO3.
 
-```python
+```bash
 pip install zarrs
 ```
 
@@ -219,10 +238,13 @@ data = arr[:]
 </v-clicks>
 
 ---
-layout: two-cols
+layout: default
 ---
 
 # zarrs-python: Performance & Caveats
+
+<div class="grid grid-cols-2 gap-8 mt-4 text-gray-600">
+<div>
 
 **Where it shines**
 
@@ -231,14 +253,17 @@ layout: two-cols
 - Large contiguous reads
 - Configurable thread pool per operation
 
-::right::
+</div>
+<div>
 
 **Current limitations**
 
-- **Filesystem stores only** — no S3/GCS/Azure yet
-- Best for local write pipelines, post-acquisition processing
+- Best for write pipelines, post-acquisition processing
 - v0.2.3 — API is still stabilizing
 - Falls back to Python pipeline for unsupported stores
+
+</div>
+</div>
 
 <!--
 For Caur Tech: if instruments write to local disk first then sync to cloud,
@@ -249,57 +274,46 @@ zarrs-python can accelerate the local write path significantly.
 layout: default
 ---
 
-# Chunking Strategy: Align to Access Patterns
+# Chunking Is Hard
 
-```
-Time axis ──────────────────────────►
-Frequency  ┌────┬────┬────┬────┬────┐
-axis       │    │    │    │    │    │  ← chunk along time: fast time slices
-│          │    │    │    │    │    │
-▼          ├────┼────┼────┼────┼────┤
-           │    │    │    │    │    │
-           └────┴────┴────┴────┴────┘
-```
+Optimal chunking is driven by **end-user access patterns** — there's no universal answer.
+
+But there are clear guidelines on what **not** to do:
 
 <v-clicks>
 
-- **Time-series queries** → chunk along time axis (narrow, deep chunks)
-- **Spectral/frequency queries** → chunk along frequency axis
-- **Both?** → compromise shape, or use sharding with fine inner chunks
-- Rule of thumb: optimize for the **80% query pattern**
+- Don't use chunks smaller than **1 MB** — HTTP overhead dominates
+- Don't use chunks larger than **100 MB** — wasted bandwidth on partial reads
+- Don't ignore your dominant query pattern — chunking against it means full-array scans
+- Don't create deep group hierarchies — each level adds LIST call overhead
+- Don't skip consolidated metadata — per-array metadata fetches add up fast
 
 </v-clicks>
+
+<div v-click class="mt-6 p-4 bg-blue-50 rounded border border-blue-200">
+
+For a thorough guide on chunking strategies and datacube design, see the **Development Seed Datacube Guide**: [developmentseed.org/datacube-guide](https://developmentseed.org/datacube-guide/latest/index.html)
+
+</div>
 
 ---
 layout: default
 ---
 
-# Object-Store Best Practices
+# Rectilinear Chunking
 
-<v-clicks>
+<div class="flex flex-col items-center">
+  <div class="w-3/4">
+    <Excalidraw drawFilePath="/diagrams/rectilinear-chunking.excalidraw" :darkMode="false" />
+  </div>
+</div>
 
-- **Chunk size sweet spot: 1–100 MB** per storage object
-  - Below 1 MB: HTTP overhead dominates
-  - Above 100 MB: wasted bandwidth on partial reads
-- **Consolidated metadata**: avoid per-array metadata fetches
-  - zarr-python 3.x: `zarr.consolidate_metadata(store)`
-- **Flat hierarchies**: every group level = additional LIST call
-- **Read coalescing**: merge nearby byte ranges into fewer requests
-  - S3 supports multi-range GET (check client support)
-- **Concurrent reads**: use async stores or thread pools for parallel chunk fetches
+<div class="mt-4 text-sm">
 
-</v-clicks>
+- Per-dimension chunk size **lists** instead of uniform integers
+- No more padding or artificial splitting for variable-length data
 
----
-layout: default
----
-
-# Rectilinear Chunking (ZEP 3)
-
-<Excalidraw drawFilePath="/diagrams/rectilinear-chunking.excalidraw" :darkMode="false" class="w-full h-70" />
-
-Per-dimension chunk size **lists** instead of uniform integers.
-No more padding or artificial splitting for variable-length data.
+</div>
 
 ---
 layout: default
@@ -327,7 +341,7 @@ layout: default
 import zarr
 zarr.config.set({"array.rectilinear_chunks": True})  # experimental flag
 
-arr = zarr.open_array(
+arr = zarr.create_array(
     "acquisitions.zarr/data",
     shape=(365, 4096),
     chunks=[[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], [4096]],
@@ -371,10 +385,18 @@ layout: default
 
 # Icechunk: Transactional Storage for Zarr
 
-<Excalidraw drawFilePath="/diagrams/icechunk-architecture.excalidraw" :darkMode="false" class="w-full h-70" />
+<div class="flex flex-col items-center">
+  <div class="w-3/4">
+    <Excalidraw drawFilePath="/diagrams/icechunk-architecture.excalidraw" :darkMode="false" />
+  </div>
+</div>
+
+<div class="mt-4 text-sm">
 
 - Rust core, Python wrapper — **no external database** required
 - All state lives in object storage (S3, GCS, Azure, local)
+
+</div>
 
 ---
 layout: default
