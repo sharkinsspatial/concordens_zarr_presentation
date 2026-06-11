@@ -153,9 +153,7 @@ zarr.create_array(
 <v-clicks>
 
 - Filter vs. compressor distinction is **arbitrary**
-- Ordering between filters is implicit
 - No checksums in the pipeline
-- All codec work happens in **Python** — GIL-bound
 
 </v-clicks>
 
@@ -179,7 +177,9 @@ layout: default
 | **Array → Bytes** | Serialize to bytes | `BytesCodec` (explicit endianness) |
 | **Bytes → Bytes** | Compress / checksum | `BloscCodec`, `ZstdCodec`, `Crc32cCodec` |
 
-Codecs execute in **declared order** — no ambiguity.
+Codecs execute in **declared order** — no ambiguity. v3 formalizes the idea that
+the in-memory array representation is an implementation specific detail.  Only
+the Array->Bytes codec defines explicit representation. 
 
 </div>
 
@@ -352,7 +352,7 @@ arr = zarr.create_array(
 
 <v-clicks>
 
-- **Status**: experimental in zarr-python 3.2 (ZEP 3 draft)
+- **Status**: experimental in zarr-python 3.2
 - Stabilization expected in **zarr-python 3.3**
 - Data written with rectilinear chunks is **not readable by older Zarr versions**
 
